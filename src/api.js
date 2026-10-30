@@ -12,7 +12,18 @@ const pick = (obj, keys, fallback = undefined) => {
   return fallback;
 };
 
-const asArray = (v) => (Array.isArray(v) ? v : []);
+/** Always return something React can render as text. */
+const text = (v, fallback = "-") => {
+  if (v === undefined || v === null || v === "") return fallback;
+  if (typeof v === "string" || typeof v === "number") return String(v);
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (Array.isArray(v)) return v.map((x) => text(x, "")).filter(Boolean).join(", ") || fallback;
+  if (typeof v === "object") {
+    const parts = Object.values(v).map((x) => text(x, "")).filter(Boolean);
+    return parts.join(", ") || fallback;
+  }
+  return fallback;
+};
 
 /** Locate the array of moves wherever the API put it. */
 function findMoves(json) {
@@ -38,7 +49,7 @@ function findMoves(json) {
 /* ---------------- Inventory tree ---------------- */
 
 const nameOf = (n) =>
-  pick(n, ["displayName", "display_name", "category_name", "categoryName", "name", "title", "label"], "");
+  text(pick(n, ["displayName", "display_name", "category_name", "categoryName", "name", "title", "label"], ""), "");
 
 const qtyOf = (n) => {
   const q = pick(n, ["qty", "quantity", "count"]);
@@ -84,13 +95,15 @@ function toCategory(node) {
   const groups = [];
   const looseRows = [];
 
+  // Only keep items the customer actually has (qty > 0).
   kids.forEach((k) => {
     const sub = childrenOf(k);
     if (sub && sub.length) {
-      const rows = sub.map(leafOf).filter((r) => r.name);
-      groups.push({ name: nameOf(k), rows });
+      const rows = sub.map(leafOf).filter((r) => r.name && r.qty > 0);
+      if (rows.length) groups.push({ name: nameOf(k), rows });
     } else if (nameOf(k)) {
-      looseRows.push(leafOf(k));
+      const row = leafOf(k);
+      if (row.qty > 0) looseRows.push(row);
     }
   });
   if (looseRows.length) groups.unshift({ name: groups.length ? "Other" : "", rows: looseRows });
@@ -105,18 +118,19 @@ function toCategories(items) {
   if (!Array.isArray(top)) top = childrenOf(top) || [];
   // Unwrap a single wrapper node (e.g. [{ inventory: [...] }]).
   if (top.length === 1 && !nameOf(top[0]) && childrenOf(top[0])) top = childrenOf(top[0]);
-  return top.map(toCategory).filter((c) => c.name && c.groups.length);
+  return top.map(toCategory).filter((c) => c.name && c.count > 0);
 }
 
 /* ---------------- Move ---------------- */
 
 function formatDistance(d) {
-  if (d === undefined) return "-";
-  const s = String(d);
+  if (d === undefined || d === null || d === "") return "-";
+  const s = text(d);
   return /[a-z]/i.test(s) ? s : `${s} km`;
 }
 
 export function formatMoveDate(value) {
+  value = typeof value === "object" ? text(value, "") : value;
   const d = new Date(value);
   if (!value || Number.isNaN(d.getTime())) return value || "-";
   const date = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -133,7 +147,11 @@ const yesNo = (v) => {
   return "-";
 };
 
-const meters = (v) => (v === undefined ? "-" : /[a-z]/i.test(String(v)) ? String(v) : `${v} meters`);
+const meters = (v) => {
+  if (v === undefined || v === null || v === "") return "-";
+  const t = text(v);
+  return /[a-z]/i.test(t) ? t : `${t} meters`;
+};
 
 function normalizeMove(m, index) {
   const items = pick(m, ["items", "inventory", "inventory_details"]);
@@ -141,25 +159,25 @@ function normalizeMove(m, index) {
   const totalItems = pick(m, ["total_items", "totalItems", "items_count", "no_of_items"], undefined);
 
   return {
-    key: pick(m, ["id", "request_id", "requestId"], index),
-    requestId: pick(m, ["request_id", "requestId", "id", "estimate_id"], "-"),
-    from: pick(m, ["from_address", "fromAddress", "from", "pickup_address", "old_address"], "-"),
-    to: pick(m, ["to_address", "toAddress", "to", "drop_address", "new_address"], "-"),
-    size: pick(m, ["property_size", "propertySize", "house_type", "bhk", "size"], "-"),
+    key: `${text(pick(m, ["id", "request_id", "requestId"], index), index)}-${index}`,
+    requestId: text(pick(m, ["request_id", "requestId", "id", "estimate_id"])),
+    from: text(pick(m, ["from_address", "fromAddress", "from", "pickup_address", "old_address"])),
+    to: text(pick(m, ["to_address", "toAddress", "to", "drop_address", "new_address"])),
+    size: text(pick(m, ["property_size", "propertySize", "house_type", "bhk", "size"])),
     itemCount:
-      totalItems !== undefined ? totalItems : categories.reduce((s, c) => s + c.count, 0) || "-",
+      totalItems !== undefined ? text(totalItems) : categories.reduce((s, c) => s + c.count, 0) || "-",
     distance: formatDistance(pick(m, ["distance", "distance_km", "distance_in_km"])),
-    movingOn: pick(m, ["moving_on", "movingOn", "move_date", "date", "shifting_date"], ""),
+    movingOn: text(pick(m, ["moving_on", "movingOn", "move_date", "date", "shifting_date"], ""), ""),
     isFlexible: Boolean(pick(m, ["is_flexible", "isFlexible", "flexible", "date_flexible"], false)),
-    additionalInfo: pick(m, ["additional_info", "additionalInfo", "additional_information"], ""),
+    additionalInfo: text(pick(m, ["additional_info", "additionalInfo", "additional_information"], ""), ""),
     house: {
       existing: {
-        floor: pick(m, ["old_floor_no", "old_floor", "existing_floor_no", "from_floor"], "-"),
+        floor: text(pick(m, ["old_floor_no", "old_floor", "existing_floor_no", "from_floor"])),
         elevator: yesNo(pick(m, ["old_elevator_availability", "old_elevator", "existing_elevator"])),
         distance: meters(pick(m, ["old_parking_distance", "old_distance", "existing_distance"])),
       },
       next: {
-        floor: pick(m, ["new_floor_no", "new_floor", "to_floor"], "-"),
+        floor: text(pick(m, ["new_floor_no", "new_floor", "to_floor"])),
         elevator: yesNo(pick(m, ["new_elevator_availability", "new_elevator"])),
         distance: meters(pick(m, ["new_parking_distance", "new_distance"])),
       },
